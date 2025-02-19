@@ -105,20 +105,15 @@ class EstimatorVar:
         prob_bins,
     ) -> pd.DataFrame:
         # fit predictors acorodng to validation groups and estimate variance
-        ...
         self.prob_predictors = []
         for train_index, test_index in groups_itr:
             # estimator = estimator.fit(data)
             estimator = clone(estimator)
             estimator = estimator.fit(self.X[train_index])
-            self.calibrator.make_binid_prob_estim_map(
-                n_bins=prob_bins, predictor=estimator
-            )
-            # self.calibrator.make_binid_prob_estim_map(n_bins=3, predictor=estimator)
             prob_pred = ProbPredictor(
                 predictor=estimator,
-                bins=self.calibrator.bins,
-                df_binid_prob_estim_map=self.calibration_map.df_binid_prob_estim_map,
+                prob_bins=prob_bins,
+                calibration_map=self.calibration_map,
             )
             self.prob_predictors.append(prob_pred)
 
@@ -131,6 +126,8 @@ class EstimatorVar:
             df_prob_pred["pred_id"] = i
             prob_pred_dfs.append(df_prob_pred)
         prob_pred_dfs = pd.concat(prob_pred_dfs)
+        # by index
+        # prob_pred_dfs.groupby(level=0).var()
         # self._var(prob_pred_dfs)
 
 
