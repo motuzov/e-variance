@@ -9,12 +9,12 @@ from sklearn.base import clone
 
 
 class Predictor(Protocol):
-    def predict(self, X: np.ndarray): ...
+    def predict_proba(self, X: np.ndarray): ...
 
 
 class Estimator(Protocol):
     def fit(self, X: np.ndarray, y: np.array): ...
-    def predict(self, X: np.ndarray): ...
+    def predict_proba(self, X: np.ndarray): ...
 
 
 class CalibrationMap:
@@ -24,17 +24,18 @@ class CalibrationMap:
         self.X: np.ndarray = X_calib
         if self.X is not None:
             self.X.flags.writeable = False
+        # enable_metadata_routing=True
 
-    def _make_map_wiht_y_pred(
-        self, n_bins: int, y_pred: np.array
+    def _make_map_wiht_y_score(
+        self, n_bins: int, y_score: np.array
     ) -> tuple[Any, pd.DataFrame]:
         self.n_bins = n_bins
         prob_estim, self._prob_pred = calibration_curve(
-            self.y_true, y_pred, n_bins=n_bins, strategy="quantile"
+            self.y_true, y_score, n_bins=n_bins, strategy="quantile"
         )
         # we need to store the bins to calibrate new predictions with it
         quantiles = np.linspace(0, 1, n_bins + 1)
-        bins = np.percentile(y_pred, quantiles * 100)
+        bins = np.percentile(y_score, quantiles * 100)
         self.first_bin_bound = bins[0]
         bins[0] = 0
         range_str = [
@@ -48,95 +49,100 @@ class CalibrationMap:
         )
         self.bins = bins[1:]
 
-    def make(self, predictor: Predictor, n_bins: int) -> tuple[Any, pd.DataFrame]:
-        y_pred = predictor.predict(self.X)
-        self._make_calibration_map_wiht_y_pred(n_bins, y_pred)
+    def make(self, clf: Predictor, n_bins: int) -> tuple[Any, pd.DataFrame]:
+        y_score = clf.predict_proba(self.X)
+        y_score = y_score[:, :1]
+        self._make_map_wiht_y_score(n_bins=n_bins, y_score=y_score)
 
 
-class ProbPredictor:
-    def __init__(
-        self, predictor: Predictor, prob_bins: int, calibration_map: CalibrationMap
-    ):
+class CalibratedProbPredictor(Predictor):
+    def __init__(self, clf: Predictor, prob_bins: int, calibration_map: CalibrationMap):
         # binds the calibrator and and the predictor
-        if predictor:
-            calibration_map.make(predictor, prob_bins)
-        self.bins = calibration_map.bins
-        self.df_binid_prob_estim_map = calibration_map.df_binid_prob_estim_map
-        self.predictor = predictor
+        if clf:
+            calibration_map.make(clf, prob_bins)
+        self._bins = calibration_map.bins
+        self._df_binid_prob_estim_map = calibration_map.df_binid_prob_estim_map
+        self._clf = clf
 
-    def calibrate(self, y_pred):
-        y_pred_binids = np.searchsorted(self.bins, y_pred)
-        print(y_pred_binids)
-        # len(y_pred_binids) == len(y_pred)
-        df_y_pred_binids = pd.DataFrame(
+    def calibrate(self, y_score: np.array):
+        y_score_binids = np.searchsorted(self._bins, y_score)
+        df_y_score_binids = pd.DataFrame(
             {
-                "binid": y_pred_binids,
-                "y_pred": y_pred,
+                "binid": y_score_binids,
+                "y_score": y_score,
             }
         )
-        # find p estimation by bin id
-        y_calibrated = pd.merge(
-            df_y_pred_binids,
-            self.df_binid_prob_estim_map,
+        y_calib_results = pd.merge(
+            df_y_score_binids,
+            self._df_binid_prob_estim_map,
             left_on="binid",
             right_index=True,
         )
-        return y_calibrated
+        return y_calib_results
 
-    def predict(self, X):
-        y_pred = self.predictor(X)
-        y_calibrated = self.calibrate(y_pred=y_pred)
-        return y_calibrated
+    def predict_proba(self, X):
+        y_score = self._clf.predict_proba(X)
+        y_score = y_score[:, :1].ravel()
+        y_calib_info = self.calibrate(y_score=y_score)
+        return y_calib_info
 
 
 class EstimatorVar:
     # the estimator states??
-    def __init__(self, X: np.ndarray, y: np.array, calibration_map: CalibrationMap):
+    def __init__(
+        self, X_train: np.ndarray, y_train: np.array, calibration_map: CalibrationMap
+    ):
         self.calibration_map = calibration_map
-        self.prob_predictors: list[ProbPredictor] = []
-        self.X = X
-        self.y = y
-        ...
+        self.prob_predictors: list[CalibratedProbPredictor] = []
+        self.X_train = X_train
+        self.y_train = y_train
 
-    def fit(
+    def fit_clfs(
         self,
         estimator: Estimator,
-        groups_itr,
+        splits,
         prob_bins,
-    ) -> pd.DataFrame:
-        # fit predictors acorodng to validation groups and estimate variance
+    ):
+        # fit predictors acorodng to groups (D_i - i group data):
+        # f_hat(D_i), D_i is i's group data
         self.prob_predictors = []
-        for train_index, test_index in groups_itr:
-            # estimator = estimator.fit(data)
-            estimator = clone(estimator)
-            estimator = estimator.fit(self.X[train_index])
-            prob_pred = ProbPredictor(
-                predictor=estimator,
+        for train_index, test_index in splits:
+            clf = clone(estimator)
+            clf.fit(self.X_train[train_index], self.y_train[train_index])
+            prob_pred = CalibratedProbPredictor(
+                clf=clf,
                 prob_bins=prob_bins,
                 calibration_map=self.calibration_map,
             )
             self.prob_predictors.append(prob_pred)
 
-    def _var(self, df_var_data): ...
+    def _pred_bin_var(self, df_var_data):
+        #  pred_id, bin_id, var p hat
+        ...
 
-    def estimate(self, X: np.ndarray):
+    def mean_binid_var(self):
+        #
+        ...
+
+    def _var_data_prep(self, X_test: np.ndarray) -> pd.DataFrame:
         prob_pred_dfs = []
         for i, prob_pred in enumerate(self.prob_predictors):
-            df_prob_pred = prob_pred.predict(X)
+            df_prob_pred = prob_pred.predict_proba(X_test)
             df_prob_pred["pred_id"] = i
             prob_pred_dfs.append(df_prob_pred)
-        prob_pred_dfs = pd.concat(prob_pred_dfs)
-        # by index
-        # prob_pred_dfs.groupby(level=0).var()
-        # self._var(prob_pred_dfs)
+        return pd.concat(prob_pred_dfs)
+
+    def estimate(self, X_test: np.ndarray):
+        self.df_var_data = self._var_data_prep(X_test)
+        self._pred_bin_var(self.df_var_data)
 
 
 def test_calibrator():
     y_true = np.array([0, 0, 0, 0, 1, 1, 1, 1, 1])
-    y_pred = np.array([0.1, 0.2, 0.3, 0.4, 0.65, 0.7, 0.8, 0.9, 1.0])
+    y_score = np.array([0.1, 0.2, 0.3, 0.4, 0.65, 0.7, 0.8, 0.9, 1.0])
     calibration_map = CalibrationMap(y_true_calib=y_true)
     print("make calibration")
-    calibration_map._make_map_wiht_y_pred(n_bins=3, y_pred=y_pred)
+    calibration_map._make_map_wiht_y_pred(n_bins=3, y_score=y_score)
     print(f"round binds {np.round(calibration_map.bins, decimals=3)}")
     round_binds_true = [0.367, 0.733, 1.0]
     print((round_binds_true == np.round(calibration_map.bins, decimals=3)).all())
