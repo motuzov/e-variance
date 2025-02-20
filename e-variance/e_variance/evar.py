@@ -129,6 +129,7 @@ class EstimatorVar:
         for i, prob_pred in enumerate(self.prob_predictors):
             df_prob_pred = prob_pred.predict_proba(X_test)
             df_prob_pred["pred_id"] = i
+            df_prob_pred["point_id"] = df_prob_pred.index
             prob_pred_dfs.append(df_prob_pred)
         return pd.concat(prob_pred_dfs)
 

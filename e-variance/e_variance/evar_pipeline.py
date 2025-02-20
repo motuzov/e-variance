@@ -27,7 +27,7 @@ def evar_pipeline():
     clf = make_pipeline(StandardScaler(), clf)
     cm = evar.CalibrationMap(X_calib=X_calib, y_true_calib=y_calib)
     var = evar.EstimatorVar(X_train=X_train, y_train=y_train, calibration_map=cm)
-    group_kfold = KFold(n_splits=2)
+    group_kfold = KFold(n_splits=3)
     splits = group_kfold.split(var.X_train)
     var.fit_clfs(estimator=clf, splits=splits, prob_bins=3)
     var_data = var._var_data_prep(X_test)
