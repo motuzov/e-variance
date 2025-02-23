@@ -10,10 +10,10 @@ from sklearn.linear_model import RidgeClassifier, LogisticRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import KFold, train_test_split
-import evar
+from evar.estimator_var import EstimatorVar, CalibrationMap
 
 
-def evar_pipeline():
+def var_data():
     data = load_breast_cancer()
     X = data["data"]
     y = data["target"]
@@ -25,14 +25,15 @@ def evar_pipeline():
     )
     clf = LogisticRegression(random_state=42)
     clf = make_pipeline(StandardScaler(), clf)
-    cm = evar.CalibrationMap(X_calib=X_calib, y_true_calib=y_calib)
-    var = evar.EstimatorVar(X_train=X_train, y_train=y_train, calibration_map=cm)
+    cm = CalibrationMap(X_calib=X_calib, y_true_calib=y_calib)
+    var = EstimatorVar(X_train=X_train, y_train=y_train, calibration_map=cm)
     group_kfold = KFold(n_splits=3)
     splits = group_kfold.split(var.X_train)
     var.fit_clfs(estimator=clf, splits=splits, prob_bins=3)
     var_data = var._var_data_prep(X_test)
-    print(var_data)
+    return var_data
 
 
 if __name__ == "__main__":
-    evar_pipeline()
+    var_data = var_data()
+    print(var_data)

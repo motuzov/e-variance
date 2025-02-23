@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from e_variance.evar import CalibratedProbPredictor, CalibrationMap
+from evar.estimator_var import CalibratedProbPredictor, CalibrationMap
 
 
 import pytest

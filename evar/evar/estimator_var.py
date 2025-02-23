@@ -51,7 +51,7 @@ class CalibrationMap:
 
     def make(self, clf: Predictor, n_bins: int) -> tuple[Any, pd.DataFrame]:
         y_score = clf.predict_proba(self.X)
-        y_score = y_score[:, :1]
+        y_score = y_score[:, 1]
         self._make_map_wiht_y_score(n_bins=n_bins, y_score=y_score)
 
 
@@ -82,7 +82,7 @@ class CalibratedProbPredictor(Predictor):
 
     def predict_proba(self, X):
         y_score = self._clf.predict_proba(X)
-        y_score = y_score[:, :1].ravel()
+        y_score = y_score[:, 1].ravel()
         y_calib_info = self.calibrate(y_score=y_score)
         return y_calib_info
 
@@ -116,13 +116,28 @@ class EstimatorVar:
             )
             self.prob_predictors.append(prob_pred)
 
-    def _pred_bin_var(self, df_var_data):
-        #  pred_id, bin_id, var p hat
-        ...
+    def _point_wise_var(self, df_var_data):
+        self.point_wise_var = df_var_data.groupby(level=0)["p_estim"].var()
 
-    def mean_binid_var(self):
-        #
-        ...
+    def _bin_wise_var(self, df_var_data: pd.DataFrame):
+        fixed_pred_id = 0
+        fixed_binid = 0
+        df_points_in_fixed_bin = df_var_data[
+            (df_var_data["binid"] == fixed_binid)
+            & (df_var_data["pred_id"] == fixed_pred_id)
+        ]
+        df_points_of_fixed_bin = pd.merge(
+            left=df_var_data[df_var_data["pred_id"] != fixed_pred_id],
+            right=df_points_in_fixed_bin,
+            how="inner",
+            left_index=True,
+            right_index=True,
+            suffixes=(f"_{fixed_pred_id}", ""),
+        )
+        diff_bin_points = df_points_of_fixed_bin[
+            df_points_of_fixed_bin[f"binid_{fixed_pred_id}"] != fixed_pred_id
+        ]
+        (diff_bin_points["p_estim_0"] - diff_bin_points["p_estim"]).var()
 
     def _var_data_prep(self, X_test: np.ndarray) -> pd.DataFrame:
         prob_pred_dfs = []
