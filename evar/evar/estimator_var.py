@@ -1,8 +1,8 @@
 import pandas as pd
 import numpy as np
-from numpy.typing import NDArray, DTypeLike, ArrayLike
+from numpy.typing import DTypeLike, ArrayLike
 from typing import Protocol, Any, Iterator
-from evar.data import COLUMN_NAMES
+from evar.data import COLUMN_NAMES, IntervalInfo
 
 
 from sklearn.calibration import calibration_curve
@@ -19,35 +19,19 @@ class Estimator(Protocol):
     def predict_proba(self, X: np.ndarray): ...
 
 
-INTERVALS_INFO_FOMAT = "{0:.2f}"
-
-
-def intervals_info(bins: ArrayLike) -> pd.Series:
-    f = INTERVALS_INFO_FOMAT.format
-    s_bins = pd.Series(bins)
-    return (
-        "["
-        + s_bins.shift(1).fillna(0).apply(f).str.cat(s_bins.apply(f), sep=", ")
-        + "]"
-    )
-
-
 class Calibrator:
     def __init__(
-        self, prob_bins: ArrayLike, prob_estim: ArrayLike, mean_score: ArrayLike
+        self, prob_bins: ArrayLike, prob_estim: ArrayLike, i_info: IntervalInfo
     ):
         prob_bins = prob_bins[1:]
-        i_info = intervals_info(prob_bins)
-        binid_prob_estim_map = pd.DataFrame(
-            {
-                COLUMN_NAMES.p_estim: prob_estim,
-                COLUMN_NAMES.mean_score: mean_score,
-                COLUMN_NAMES.bin_interval: i_info,
-            }
-        )
 
         self._prob_bins: ArrayLike = prob_bins
-        self._binid_prob_estim_map: pd.DataFrame = binid_prob_estim_map
+        self._binid_prob_estim_map: pd.DataFrame = pd.DataFrame(
+            {
+                COLUMN_NAMES.p_estim: prob_estim,
+            }
+        )
+        self._i_info: IntervalInfo = i_info
         self._debug_info = {}
 
     def __call__(self, y_score: ArrayLike) -> pd.DataFrame:
@@ -66,30 +50,42 @@ class Calibrator:
         )
         return y_calib_results
 
+    @property
+    def info(self):
+        return self._binid_prob_estim_map.assign(
+            **{COLUMN_NAMES.bin_interval: self._i_info(self._prob_bins)}
+        )
+
+    def __repr__(self) -> pd.DataFrame:
+        return str(self.info)
+
     def save_debug_info(self, k: str, v: Any):
         self._debug_infop[k] = v
 
 
 class CalibratorFactory:
-    def __init__(self, y_true_calib: np.array, X_calib: np.ndarray = None):
+    def __init__(
+        self, y_true_calib: np.array, X_calib: np.ndarray, interval_info: IntervalInfo
+    ):
         self.y_true: np.array = y_true_calib
         self.y_true.flags.writeable = False
         self.X: np.ndarray = X_calib
         if self.X is not None:
             self.X.flags.writeable = False
         self._bebug = True
+        self.interval_info = interval_info
         # enable_metadata_routing=True
 
     def _make_map_wiht_y_score(self, n_bins: int, y_score: np.array) -> Calibrator:
         self.n_bins = n_bins
-        prob_estim, mean_score = calibration_curve(
+        prob_estim, self._prob_pred = calibration_curve(
             self.y_true, y_score, n_bins=n_bins, strategy="quantile"
         )
         # We need to store the bins to calibrate predictions with it.
         quantiles = np.linspace(0, 1, n_bins + 1)
         bins = np.percentile(y_score, quantiles * 100)
         calibrator = Calibrator(
-            prob_bins=bins, prob_estim=prob_estim, mean_score=mean_score
+            prob_bins=bins, prob_estim=prob_estim, i_info=self.interval_info
         )
         return calibrator
 
@@ -141,6 +137,9 @@ class EstimatorVar:
             prob_pred = CalibratedProbPredictor(clf=clf, calibrator=calibrator)
             self.prob_predictors.append(prob_pred)
 
+    def set_i_formt_str(self, format_str: str):
+        self.calibration_factory.interval_info._format_str = format_str
+
     def _bin_wise_var(self, df_var_data: pd.DataFrame):
         fixed_pred_id = 0
         fixed_binid = 0
@@ -182,3 +181,17 @@ class EstimatorVar:
     def estimate(self):
         self.df_var_data = self._var_data_prep(self.X_test)
         self._point_wise_var(self.df_var_data)
+
+
+class EVarContexMngr(object):
+    def __init__(self, evar: EstimatorVar, format_str: str):
+        self._saved_i_formt_str = evar.calibration_factory.interval_info._format_str
+        self._evar = evar
+        self._evar.set_i_formt_str(format_str)
+
+    def __enter__(self) -> EstimatorVar:
+        return self._evar
+
+    def __exit__(self, type, value, traceback):
+        self._evar.set_i_formt_str(format_str=self._saved_i_formt_str)
+        return True
