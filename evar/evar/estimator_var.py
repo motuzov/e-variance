@@ -11,7 +11,20 @@ from collections.abc import Callable
 
 
 class Predictor(Protocol):
-    def predict_proba(self, X: np.ndarray): ...
+    def predict_proba(self, X: ArrayLike) -> ArrayLike:
+        """
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Vector to be scored, where `n_samples` is the number of samples and
+            `n_features` is the number of features.
+          Returns
+        -------
+        T : array-like of shape (n_samples, n_classes)
+            Returns the probability of the sample for each class in the model,
+            where classes are ordered as they are in ``self.classes_``.
+        """
+        ...
 
 
 class Estimator(Protocol):
@@ -42,13 +55,13 @@ class Calibrator:
                 COLUMN_NAMES.y_score: y_score,
             }
         )
-        y_calib_results = pd.merge(
+        p_estim_by_bins = pd.merge(
             df_y_score_binids,
             self._binid_prob_estim_map,
             left_on=COLUMN_NAMES.binid,
             right_index=True,
         )
-        return y_calib_results
+        return p_estim_by_bins
 
     @property
     def info(self):
@@ -58,9 +71,6 @@ class Calibrator:
 
     def __repr__(self) -> pd.DataFrame:
         return str(self.info)
-
-    def save_debug_info(self, k: str, v: Any):
-        self._debug_infop[k] = v
 
 
 class CalibratorFactory:
@@ -76,23 +86,18 @@ class CalibratorFactory:
         self.interval_info = interval_info
         # enable_metadata_routing=True
 
-    def _make_map_wiht_y_score(self, n_bins: int, y_score: np.array) -> Calibrator:
-        self.n_bins = n_bins
+    def create(self, clf: Predictor, n_bins: int) -> Calibrator:
+        y_score = clf.predict_proba(self.X)
+        y_score_1d = y_score[:, 1]
         prob_estim, self._prob_pred = calibration_curve(
-            self.y_true, y_score, n_bins=n_bins, strategy="quantile"
+            self.y_true, y_score_1d, n_bins=n_bins, strategy="quantile"
         )
         # We need to store the bins to calibrate predictions with it.
         quantiles = np.linspace(0, 1, n_bins + 1)
-        bins = np.percentile(y_score, quantiles * 100)
-        calibrator = Calibrator(
+        bins = np.percentile(y_score_1d, quantiles * 100)
+        return Calibrator(
             prob_bins=bins, prob_estim=prob_estim, i_info=self.interval_info
         )
-        return calibrator
-
-    def create(self, clf: Predictor, n_bins: int) -> Calibrator:
-        y_score = clf.predict_proba(self.X)
-        y_score = y_score[:, 1]
-        return self._make_map_wiht_y_score(n_bins=n_bins, y_score=y_score)
 
 
 class CalibratedProbPredictor(Predictor):
@@ -103,8 +108,8 @@ class CalibratedProbPredictor(Predictor):
     def predict_proba(self, X):
         y_score = self._clf.predict_proba(X)
         y_score = y_score[:, 1].ravel()
-        y_calib_info = self._calibrate(y_score=y_score)
-        return y_calib_info
+        p_estim_by_bins = self._calibrate(y_score=y_score)
+        return p_estim_by_bins
 
 
 class EstimatorVar:
@@ -183,7 +188,7 @@ class EstimatorVar:
         self._point_wise_var(self.df_var_data)
 
 
-class EVarContexMngr(object):
+class EVarCntxMngr(object):
     def __init__(self, evar: EstimatorVar, format_str: str):
         self._saved_i_formt_str = evar.calibration_factory.interval_info._format_str
         self._evar = evar
